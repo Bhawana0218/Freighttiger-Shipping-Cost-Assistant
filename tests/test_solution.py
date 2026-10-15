@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import solution
 from solution import (
+    ContextNote,
     OWN_HISTORY_THRESHOLD_PCT,
     PEER_THRESHOLD_PCT,
     add_baselines,
@@ -21,6 +22,7 @@ from solution import (
     detect_anomalies,
     load_notes,
     monday_of_week,
+    note_can_justify,
     retrieve_note,
     run_pipeline,
 )
@@ -257,6 +259,88 @@ class TestNoteRetrieval(unittest.TestCase):
                 self.assertIn(matched.note_id, {"N001", "N002", "N003"})
 
 
+class TestUniformNoteJustification(unittest.TestCase):
+    def _note(self, note_id, applies_to, start, end):
+        return ContextNote(
+            note_id=note_id,
+            date=pd.Timestamp(start),
+            applies_to=applies_to,
+            text="test note",
+            is_evidence=True,
+            window_start=pd.Timestamp(start),
+            window_end=pd.Timestamp(end),
+            summary="test note",
+        )
+
+    def _weekly_row(self, route, week, cost, own_hist, peer_cost):
+        own = 10.0
+        peer = 10.0
+        return pd.DataFrame(
+            [{"route": route, "route_type": "Short", "week_of": pd.Timestamp(week),
+              "cost_per_tonne_km": cost, "total_cost": 100.0, "total_tonne_km": 10.0,
+              "shipment_count": 1,
+              "own_history_avg": own if own_hist is None else own_hist,
+              "peer_avg": peer if peer_cost is None else peer_cost,
+              "vs_own_history_pct": ((cost - (own if own_hist is None else own_hist)) / (own if own_hist is None else own_hist)) * 100,
+              "vs_peer_pct": ((cost - (peer if peer_cost is None else peer_cost)) / (peer if peer_cost is None else peer_cost)) * 100,
+              "is_flagged": True}]
+        )
+
+    def test_all_routes_note_cannot_justify_peer_triggered_only_flag(self):
+        week = pd.Timestamp("2025-06-23")
+        weekly = pd.DataFrame(
+            [
+                {"route": "R1", "route_type": "Short", "week_of": week,
+                 "cost_per_tonne_km": 12.06, "total_cost": 100.0, "total_tonne_km": 10.0,
+                 "shipment_count": 1, "own_history_avg": 11.35, "peer_avg": 9.5,
+                 "vs_own_history_pct": 6.2, "vs_peer_pct": 20.6, "is_flagged": True},
+            ]
+        )
+        notes = [self._note("N003", "All Routes", "2025-05-05", "2025-06-29")]
+        rows = build_output_rows(weekly, notes)
+        self.assertEqual(rows[0]["flagged"], "Yes")
+        self.assertEqual(rows[0]["matched_note_id"], "")
+        self.assertIn("rejected", rows[0]["reason"])
+
+    def test_all_routes_note_can_justify_own_triggered_flag(self):
+        week = pd.Timestamp("2025-05-12")
+        weekly = pd.DataFrame(
+            [
+                {"route": "R1", "route_type": "Short", "week_of": week,
+                 "cost_per_tonne_km": 11.16, "total_cost": 100.0, "total_tonne_km": 10.0,
+                 "shipment_count": 1, "own_history_avg": 10.0, "peer_avg": 9.5,
+                 "vs_own_history_pct": 11.6, "vs_peer_pct": 6.7, "is_flagged": True},
+            ]
+        )
+        notes = [self._note("N003", "All Routes", "2025-05-05", "2025-06-29")]
+        rows = build_output_rows(weekly, notes)
+        self.assertEqual(rows[0]["flagged"], "No (justified)")
+        self.assertEqual(rows[0]["matched_note_id"], "N003")
+
+    def test_route_specific_note_can_justify_peer_triggered_flag(self):
+        week = pd.Timestamp("2025-02-24")
+        weekly = pd.DataFrame(
+            [
+                {"route": "R1", "route_type": "Short", "week_of": week,
+                 "cost_per_tonne_km": 13.15, "total_cost": 100.0, "total_tonne_km": 10.0,
+                 "shipment_count": 1, "own_history_avg": 10.0, "peer_avg": 9.5,
+                 "vs_own_history_pct": 31.5, "vs_peer_pct": 38.7, "is_flagged": True},
+            ]
+        )
+        notes = [self._note("N001", "R1", "2025-02-24", "2025-03-08")]
+        rows = build_output_rows(weekly, notes)
+        self.assertEqual(rows[0]["flagged"], "No (justified)")
+        self.assertEqual(rows[0]["matched_note_id"], "N001")
+
+    def test_note_can_justify_unit(self):
+        all_routes = self._note("N003", "All Routes", "2025-05-05", "2025-06-29")
+        route_specific = self._note("N001", "R1", "2025-02-24", "2025-03-08")
+        self.assertFalse(note_can_justify(all_routes, 6.2, 20.6))
+        self.assertTrue(note_can_justify(all_routes, 11.6, 6.7))
+        self.assertTrue(note_can_justify(route_specific, 6.2, 20.6))
+        self.assertFalse(note_can_justify(all_routes, float("nan"), 20.6))
+
+
 class TestOutputContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -353,6 +437,38 @@ class TestSampleContract(unittest.TestCase):
         self.assertEqual(r["vs_similar_routes"], "+23.6% vs similar-length routes this week")
         self.assertEqual(r["flagged"], "Yes")
         self.assertTrue(pd.isna(r["matched_note_id"]))
+
+
+class TestDieselNotePeerJustification(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        out_path = Path(cls.temp.name) / "output.csv"
+        run_pipeline(PROJECT_DIR, out_path)
+        cls.out = pd.read_csv(out_path, dtype=str)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def row(self, route, week):
+        return self.out[(self.out["route"] == route) & (self.out["week_of"] == week)].iloc[0]
+
+    def test_mumbai_pune_2025_06_23_peer_triggered_not_justified(self):
+        r = self.row("Mumbai-Pune", "2025-06-23")
+        self.assertEqual(r["flagged"], "Yes")
+        self.assertTrue(pd.isna(r["matched_note_id"]))
+        self.assertIn("rejected", r["reason"])
+        self.assertIn("N003", r["reason"])
+
+    def test_mumbai_delhi_2025_05_12_own_triggered_justified(self):
+        r = self.row("Mumbai-Delhi", "2025-05-12")
+        self.assertEqual(r["flagged"], "No (justified)")
+        self.assertEqual(r["matched_note_id"], "N003")
+
+    def test_peer_of_mumbai_pune_fell_same_week(self):
+        r = self.row("Delhi-Jaipur", "2025-06-23")
+        self.assertEqual(r["flagged"], "No")
 
 
 if __name__ == "__main__":

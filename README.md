@@ -59,7 +59,7 @@ Run the solution (writes `output.csv` and `run_metrics.json`):
 python solution.py
 ```
 
-Run the full evaluation harness — 42 tests, 3-run reproducibility check with SHA-256
+Run the full evaluation harness — 49 tests, 3-run reproducibility check with SHA-256
 comparison, output schema validation — and write `evaluation_report.json`:
 
 ```bash
@@ -169,10 +169,15 @@ Each note is classified once, at load time:
      does not. The recovery note N009 (2025-03-17) never justifies.
    - N002: a one-week festival surcharge — the week of 2025-01-20 only.
    - N003: "starting this week" with no stated end. The note is bounded to an
-     explicit 8-week absorption window (2025-05-05 through 2025-06-29, i.e. weeks
-     of May 5 to June 23) rather than extended indefinitely: a one-time fuel
-     shock is absorbed into the trailing eight-week baseline after eight weeks,
-     and the supplied sample confirms the note must not justify September rows.
+     explicit 8-week window (2025-05-05 through 2025-06-29, i.e. weeks of May 5
+     to June 23) rather than extended indefinitely. This bound is an explicit
+     implementation heuristic, not a fact from the source: the note states no
+     duration. The rationale is that a one-time level shift is absorbed into
+     the trailing eight-week own-history baseline after eight weeks, so the
+     note no longer explains an own-history anomaly beyond that point; and the
+     supplied sample confirms the note must not justify September rows. The
+     boundary is unit-tested (week of June 23 is inside, week of June 30 is
+     outside).
 3. **Scope.** Route-specific notes apply only to that route; `All Routes` notes
    apply to every route within their window.
 
@@ -184,17 +189,37 @@ Reasons quote the note's ID, date, scope, and content, and state that a note is
 *evidence of a possible explanation, not proof that it fully accounts for the
 measured increase*.
 
+4. **Uniform-note scope rule.** A note whose scope is `All Routes` describes a
+   network-wide condition that moves every route's cost roughly equally. Such a
+   note can explain why a route is more expensive than *its own past* (an
+   own-history trigger), but it **cannot** explain why the route diverges from
+   *other routes in the same week* (a peer trigger) — the same network-wide
+   change is already present in the peer average. Route-specific notes (N001,
+   N002) can justify either trigger, because they explain why *this* route
+   deviates from both its history and its peers. When an `All Routes` note is
+   matched but rejected under this rule, the reason states that the note was
+   considered and why it was rejected, so the decision is auditable rather
+   than silent.
+
 ## Measured results (this dataset)
 
 | Metric | Value |
 |---|---|
 | Shipment records processed | 2,940 (0 dropped: no invalid dates, no missing values, no zero denominators) |
 | Route-week output rows | 728 |
-| Flagged unexplained (`Yes`) | 23 |
-| Justified (`No (justified)`) | 5 (N001 x2, N002 x1, N003 x2) |
+| Flagged unexplained (`Yes`) | 24 |
+| Justified (`No (justified)`) | 4 (N001 x2, N002 x1, N003 x1) |
 | Unflagged (`No`) | 700 |
 | LLM calls / input tokens / output tokens / cost | 0 / 0 / 0 / $0.00 |
 | Execution time | ~1.5 s per full run |
+
+Justified rows: Ahmedabad-Mumbai 2025-01-20 (N002, festival surcharge,
+own-triggered +29.5%); Chennai-Bangalore 2025-02-24 and 2025-03-03 (N001,
+flooding, own-triggered); Mumbai-Delhi 2025-05-12 (N003, diesel, own-triggered
++11.6%). Mumbai-Pune 2025-06-23 was previously justified by N003 but is now
+correctly unexplained: its flag was peer-triggered (+20.6% vs peers, only +6.2%
+vs own history), and a uniform nationwide diesel note cannot explain a
+route-specific divergence from same-week peers.
 
 The three sample-contract rows reproduce exactly: Delhi-Jaipur 2024-11-11
 (4.17, +35.5%, +21.0%, `Yes`), Ahmedabad-Mumbai 2025-01-20 (3.29, +29.5%, +22.5%,
@@ -206,9 +231,9 @@ Three consecutive runs on the unchanged input files produce byte-identical
 `output.csv` (verified by SHA-256):
 
 ```
-6dcaff7782d6ea18edecf1c9650e8e8a39d412ae98ae8360cd377c0fac9e3d42
-6dcaff7782d6ea18edecf1c9650e8e8a39d412ae98ae8360cd377c0fac9e3d42
-6dcaff7782d6ea18edecf1c9650e8e8a39d412ae98ae8360cd377c0fac9e3d42
+3cf605deeb2f31c674e608bd27ed9d69df9b6acf76e8a955df3e43b381901c38
+3cf605deeb2f31c674e608bd27ed9d69df9b6acf76e8a955df3e43b381901c38
+3cf605deeb2f31c674e608bd27ed9d69df9b6acf76e8a955df3e43b381901c38
 identical: true
 ```
 
@@ -217,17 +242,18 @@ output, and no network access.
 
 ## Evaluation
 
-`python evaluate.py` runs 42 tests covering: Monday week assignment; the
+`python evaluate.py` runs 49 tests covering: Monday week assignment; the
 aggregation formula; no look-ahead in the eight-week baseline; fewer-than-eight
 history behaviour; peer averages excluding self; missing history and missing
 peer groups; threshold boundaries (±0.1 pp around both thresholds); route-
 specific note matching; date-window matching including the flood and recovery
-periods; rejection of all seven non-evidence notes; blank `matched_note_id` for
-unexplained anomalies; CSV schema, column order, Monday-date format, and
-two-decimal cost format; and byte-level reproduction of the three supplied
-sample rows.
+periods; rejection of all seven non-evidence notes; the uniform-note scope rule
+(`All Routes` notes cannot justify peer-triggered flags, with an auditable
+rejection reason); blank `matched_note_id` for unexplained anomalies; CSV
+schema, column order, Monday-date format, and two-decimal cost format; and
+byte-level reproduction of the three supplied sample rows.
 
-Result: **42 run, 0 failures, 0 errors**; schema check valid; three-run
+Result: **49 run, 0 failures, 0 errors**; schema check valid; three-run
 reproducibility identical. Full details in `evaluation_report.json`; runtime
 and cost facts in `run_metrics.json`.
 
@@ -243,9 +269,13 @@ and cost facts in `run_metrics.json`.
   -tested with synthetic input.
 - **Notes near a flag in date but non-impactful** (N005, N006, N007, N008, N010)
   are rejected by the polarity rule, not by date proximity.
+- **Uniform network-wide notes** (N003) cannot justify peer-triggered flags,
+  because a change that applies to all routes equally does not alter relative
+  same-week comparisons; this is enforced by the uniform-note scope rule and
+  covered by regression tests.
 - **Threshold boundary** uses `>=`: exactly +10% vs own history or +15% vs peers
   flags the row.
-- **The diesel note window is a documented design choice** (8-week absorption),
+- **The diesel note window is a documented design choice** (8-week bound),
   not a fact from the data; it is the one place where the solution adds an
   explicit bound where the note states none.
 

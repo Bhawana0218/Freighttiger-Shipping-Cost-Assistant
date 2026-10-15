@@ -236,6 +236,13 @@ def retrieve_note(route: str, week_of: pd.Timestamp, notes: list[ContextNote]) -
     return candidates[0]
 
 
+def note_can_justify(note: ContextNote, own_history_pct: float, peer_pct: float) -> bool:
+    if note.applies_to != "All Routes":
+        return True
+    own_trigger = not pd.isna(own_history_pct) and own_history_pct >= OWN_HISTORY_THRESHOLD_PCT
+    return own_trigger
+
+
 def format_pct(value: float) -> str:
     return "" if pd.isna(value) else f"{value:+.1f}%"
 
@@ -244,7 +251,12 @@ def comparison_phrase(value: float, label: str) -> str:
     return "" if pd.isna(value) else f"{value:+.1f}% vs {label}"
 
 
-def build_reason(row, note: ContextNote | None, verdict: str) -> str:
+def build_reason(
+    row,
+    note: ContextNote | None,
+    verdict: str,
+    rejected_note: ContextNote | None = None,
+) -> str:
     week_str = row.week_of.strftime("%Y-%m-%d")
     if verdict == "No":
         own_phrase = comparison_phrase(row.vs_own_history_pct, "own 8-week history")
@@ -267,6 +279,14 @@ def build_reason(row, note: ContextNote | None, verdict: str) -> str:
             "The note is evidence of a possible explanation, not proof that it fully accounts "
             "for the measured increase."
         )
+    if rejected_note is not None:
+        return (
+            f"Flagged anomaly ({comparison}). Note {rejected_note.note_id} "
+            f"({rejected_note.date.strftime('%Y-%m-%d')}, applies to {rejected_note.applies_to}) "
+            "was considered but rejected: it describes a uniform network-wide cost change and "
+            "cannot explain this route's divergence from similar routes in the same week; "
+            "flagged for human review."
+        )
     return (
         f"Flagged anomaly ({comparison}). No note in context_notes.csv provides a genuine "
         f"cost-rise explanation for {row.route} in the week of {week_str}; flagged for human review."
@@ -277,6 +297,10 @@ def build_output_rows(weekly: pd.DataFrame, notes: list[ContextNote]) -> list[di
     rows = []
     for row in weekly.itertuples():
         note = retrieve_note(row.route, row.week_of, notes) if row.is_flagged else None
+        rejected_note = None
+        if note is not None and not note_can_justify(note, row.vs_own_history_pct, row.vs_peer_pct):
+            rejected_note = note
+            note = None
         if not row.is_flagged:
             verdict = "No"
         elif note is not None:
@@ -300,7 +324,7 @@ def build_output_rows(weekly: pd.DataFrame, notes: list[ContextNote]) -> list[di
                 ),
                 "flagged": verdict,
                 "matched_note_id": note.note_id if note is not None else "",
-                "reason": build_reason(row, note, verdict),
+                "reason": build_reason(row, note, verdict, rejected_note),
             }
         )
     rows.sort(key=lambda r: (r["week_of"], r["route"]))
