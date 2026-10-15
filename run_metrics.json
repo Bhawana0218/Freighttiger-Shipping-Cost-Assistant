@@ -1,0 +1,22 @@
+{
+  "shipment_records_processed": 2940,
+  "shipment_records_total_in_file": 2940,
+  "invalid_date_rows_dropped": 0,
+  "rows_with_missing_values_dropped": 0,
+  "zero_denominator_groups_dropped": 0,
+  "route_week_output_rows": 728,
+  "flagged_unexplained_rows": 23,
+  "justified_rows": 5,
+  "unflagged_rows": 700,
+  "llm_calls": 0,
+  "llm_input_tokens": 0,
+  "llm_output_tokens": 0,
+  "estimated_model_cost_usd": 0.0,
+  "pricing_assumptions": "No LLM used. Deterministic rule-based implementation: 0 LLM calls, 0 input tokens, 0 output tokens, 0 USD model cost. Local Python/pandas processing only.",
+  "execution_time_seconds": 1.0856,
+  "thresholds": {
+    "own_history_threshold_pct": 10.0,
+    "peer_threshold_pct": 15.0,
+    "own_history_weeks": 8
+  }
+}
